@@ -1,0 +1,56 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "new_report": "New Report",
+    "marketplace": "Marketplace",
+    "profile": "Profile",
+    "admin": "Admin",
+    "logout": "Logout",
+    "settings": "Settings",
+    "my_account": "My Account",
+    "home": "Home"
+  },
+  "dashboard": {
+    "welcome": "Good {{time}}, {{name}}! 🌾",
+    "subtitle": "Your crops are being monitored. Here's a snapshot of your farm health today.",
+    "active_dashboard": "Active Dashboard",
+    "new_diagnosis": "New Diagnosis",
+    "total_reports": "Total Reports",
+    "success_rate": "Success Rate",
+    "high_priority": "High Priority",
+    "this_month": "This Month",
+    "quick_actions": "Quick Actions",
+    "new_report_action": "New Diagnosis Report",
+    "nearby_suppliers": "Find Nearby Suppliers",
+    "update_profile": "Update Farm Profile",
+    "view_admin": "View Admin Panel",
+    "recent_reports": "Recent Reports",
+    "recent_reports_desc": "Your latest crop diagnosis history",
+    "no_reports": "No Reports Yet",
+    "no_reports_desc": "Start by uploading a photo of your crop to get your first AI-powered diagnosis.",
+    "create_first": "Create Your First Diagnosis"
+  },
+  "new_report": {
+    "title": "Create New Diagnosis Report",
+    "subtitle": "Upload a photo of your crop and describe the symptoms to get an AI-powered diagnosis.",
+    "form_title": "Crop Diagnosis Form",
+    "form_subtitle": "Follow these simple steps to get your AI diagnosis",
+    "step1": "Upload Crop Image",
+    "step2": "Crop Details & Symptoms",
+    "step3": "Location (Optional)",
+    "crop_type": "Identify the Crop (Optional)",
+    "symptoms_desc": "Describe the Symptoms",
+    "symptoms_placeholder": "Describe what you observe: yellow spots on leaves, wilting, stunted growth, etc.",
+    "auto_detect": "Auto-detect from image",
+    "submit": "Analyze Crop with AI"
+  },
+  "settings": {
+    "title": "Account Settings",
+    "subtitle": "Manage your app preferences and settings.",
+    "lang_prefs": "Language Preferences",
+    "lang_desc": "Choose the language you prefer for the application UI and AI Diagnosis.",
+    "lang_label": "Application Language",
+    "save": "Save Settings",
+    "saved": "Settings Saved"
+  }
+}
