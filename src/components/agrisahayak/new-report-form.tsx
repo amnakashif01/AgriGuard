@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import Image from 'next/image';
 import { Upload, X, MapPin, Sparkles, Shield, Leaf, AlertTriangle } from 'lucide-react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { instantDiagnosisFromImageAndSymptoms } from '@/ai/flows/instant-diagnosis-from-image-and-symptoms';
 
 import LoadingSpinner from './loading-spinner';
@@ -20,13 +21,14 @@ import { SkeletonForm } from "@/components/ui/skeleton-enhanced";
 import { InteractiveButton, ScrollAnimation, TouchGesture } from "@/components/ui/interactive";
 import { AccessibleFormField, AccessibleButton, LiveRegion } from "@/components/ui/accessibility";
 import { useToast } from "@/hooks/use-toast";
-import { sendDiseaseWarning, sendTreatmentReminder } from "@/lib/notifications";
+import { sendDiagnosisComplete, sendTreatmentReminder } from "@/lib/notifications";
 import TreatmentPlanCard from './treatment-plan-card';
 import SuppliersCard from './suppliers-card';
 import { useAuth } from '@/firebase';
 import { useTranslation } from "react-i18next";
-import { createReport, createLog, updateReport, getProfile } from '@/lib/repositories';
-import { DiagnosisReport, UserProfile } from '@/lib/models';
+import { createReport, createLog, updateReport, getProfile, listFields } from '@/lib/repositories';
+import { DiagnosisReport, UserProfile, Field } from '@/lib/models';
+import { isPlanEligible } from '@/lib/report-utils';
 
 type LoadingState = 'idle' | 'starting' | 'diagnosing' | 'planning' | 'done' | 'error';
 type LoadingMessages = { [key in LoadingState]?: string };
@@ -112,6 +114,8 @@ export default function NewReportForm() {
     const [imagePreview, setImagePreview] = useState<string | null>(null);
     const [symptoms, setSymptoms] = useState('');
     const [selectedCrop, setSelectedCrop] = useState<string>('');
+    const [selectedField, setSelectedField] = useState<string>('');
+    const [fields, setFields] = useState<Field[]>([]);
     const [loadingState, setLoadingState] = useState<LoadingState>('idle');
     const [error, setError] = useState<string | null>(null);
     const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -119,6 +123,13 @@ export default function NewReportForm() {
     const [report, setReport] = useState<DiagnosisReport | null>(null);
     const { toast } = useToast();
     const { t } = useTranslation();
+    const searchParams = useSearchParams();
+    const router = useRouter();
+
+    useEffect(() => {
+        const fieldIdParam = searchParams.get('fieldId');
+        if (fieldIdParam) setSelectedField(fieldIdParam);
+    }, [searchParams]);
 
     // Added state for simulated progress
     const [simulatedProgress, setSimulatedProgress] = useState(0);
@@ -150,114 +161,17 @@ export default function NewReportForm() {
     const diagnosisInProgressRef = useRef(false);
     const planningInProgressRef = useRef(false);
 
-    // Fetch user profile when user changes
     useEffect(() => {
         if (user) {
             getProfile(user.uid).then(setProfile);
+            listFields(user.uid).then(setFields);
         } else {
             setProfile(null);
+            setFields([]);
         }
     }, [user]);
 
-    // Effect to run the diagnostic agent
-    useEffect(() => {
-        const shouldRunDiagnosis = 
-            loadingState === 'diagnosing' && 
-            user && 
-            report && 
-            report.id &&
-            report.imageUrl && 
-            !report.disease && // Don't re-run if diagnosis already exists
-            diagnosisInitiatedForReportIdRef.current !== report.id &&
-            !diagnosisInProgressRef.current; // Don't start if already in progress
-            
-        if (shouldRunDiagnosis) {
-            diagnosisInitiatedForReportIdRef.current = report.id; // Mark this report ID as initiated
-            diagnosisInProgressRef.current = true; // Mark as in progress
-            
-            console.log(`🔵 Starting diagnosis for report ${report.id}`);
-            
-            (async () => {
-                const startTime = Date.now();
-                await createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_started', reportId: report.id, status: 'info' });
-                try {
-                    // Keep the server-action payload small enough for Vercel and speed up Gemini analysis.
-                    const analysisBlob = await compressImage(imageFile!, 512, 0.6);
-                    const photoDataUri = await blobToDataUri(analysisBlob);
-                    
-                    // Auto-detect crop or use selected
-                    const cropToAnalyze = selectedCrop && selectedCrop !== 'Auto' ? selectedCrop : (profile?.crops?.[0] || 'Unknown Crop');
-                    
-                    const diagnosis = await instantDiagnosisFromImageAndSymptoms({
-                        photoDataUri,
-                        symptoms,
-                        crop: cropToAnalyze,
-                        language: profile?.language || 'english'
-                    });
-                    
-                    console.log(`✅ Diagnosis completed for report ${report.id}: ${diagnosis.disease}, confidence: ${diagnosis.confidence}%`);
-                    
-                    await updateReport(user.uid, report.id, {
-                        crop: diagnosis.crop !== 'Unknown Crop' ? diagnosis.crop : cropToAnalyze, // Use AI refined crop or fallback to user selection
-                        disease: diagnosis.disease,
-                        confidence: diagnosis.confidence,
-                        affectedParts: diagnosis.affectedParts,
-                        severity: diagnosis.severity,
-                        description: diagnosis.description,
-                        ...(diagnosis.plan ? { plan: diagnosis.plan } : { plan: null }),
-                    });
 
-                    if (profile?.notificationPreferences?.weatherAlerts !== false && diagnosis.severity === 'High') {
-                        await sendDiseaseWarning(user.uid, cropToAnalyze, diagnosis.disease, profile?.location || 'your area');
-                    }
-                    
-                    await createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_completed', reportId: report.id, status: 'success', duration: Date.now() - startTime, payload: diagnosis });
-                    
-                    diagnosisInProgressRef.current = false; // Mark as complete
-                    
-                    const isNotCrop = diagnosis.disease?.toLowerCase().includes('not a crop');
-                    
-                    if (isNotCrop) {
-                        toast({ title: "Analysis Complete", description: "The image does not appear to be a plant. No treatment plan generated.", className: "bg-blue-100 text-blue-800" });
-                        await updateReport(user.uid, report.id, { status: 'Complete' } as any);
-                        setReport(prev => prev ? { ...prev, ...diagnosis, status: 'Complete' } : null);
-                        setLoadingState('done');
-                        window.dispatchEvent(new Event('reportCreated'));
-                    } else {
-                        // Plan was successfully evaluated (either generated, or skipped because plant is healthy)
-                        if (diagnosis.plan && profile?.notificationPreferences?.treatmentReminders !== false && diagnosis.plan.steps?.[0]?.title) {
-                            await sendTreatmentReminder(user.uid, diagnosis.plan.steps[0].title, new Date());
-                        }
-                        await updateReport(user.uid, report.id, { status: 'Complete' } as any);
-                        setReport(prev => prev ? { ...prev, ...diagnosis, status: 'Complete' } : null);
-                        toast({ title: "Analysis Complete!", description: "Your complete report is now available.", className: "bg-green-100 text-green-800" });
-                        setLoadingState('done');
-                        window.dispatchEvent(new Event('reportCreated'));
-                    }
-                } catch (e: any) {
-                    console.error("Diagnostic agent error:", e);
-                        // Mark the report as pending for background retry and create an error log
-                        try {
-                            await updateReport(user.uid, report.id, { status: 'Pending' } as any);
-                        } catch (updateErr) {
-                            console.warn('Failed to mark report Pending:', updateErr);
-                        }
-                        await createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_failed', reportId: report.id, status: 'error', duration: Date.now() - startTime, payload: { error: e?.message || String(e) } });
-                        const actualError = e?.message ? ` (${e.message})` : '';
-                        setError(`AI service is temporarily unavailable${actualError}. We've saved your report and will retry diagnosis. Please check back in a few minutes or try again.`);
-                        diagnosisInProgressRef.current = false; // Mark as complete (failed)
-                        diagnosisInitiatedForReportIdRef.current = null; // Reset on error
-                        setLoadingState('idle');
-                }
-            })();
-        } else if (report?.disease && loadingState === 'diagnosing') {
-            // Diagnosis already exists, skip to planning
-            console.log(`⏭️ Skipping diagnosis for report ${report.id} - diagnosis already exists: ${report.disease}`);
-            setLoadingState('planning');
-        } else if (diagnosisInProgressRef.current && loadingState === 'diagnosing') {
-            console.log(`⏸️ Diagnosis already in progress for report ${report?.id}, blocking duplicate call`);
-        }
-    }, [loadingState, user, report?.id, report?.imageUrl, report?.disease, imageFile, symptoms, toast, selectedCrop, profile]);
 
     const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -302,61 +216,114 @@ export default function NewReportForm() {
         let reportId = '';
 
         try {
-            console.log("Starting report creation process...");
-            
-            // 1. Create initial report document
-            console.log("Creating report document...");
-            reportId = await createReport(user.uid, {
-                crop: profile?.crops?.[0] || 'Crop to be identified', // Use first crop from profile or placeholder
+            // Phase 1: Parallel preparation — report, thumbnail, and analysis image at once
+            console.log("Starting optimized report creation...");
+            const [newReportId, imageThumb, analysisBlob] = await Promise.all([
+                createReport(user.uid, {
+                    crop: profile?.crops?.[0] || 'Crop to be identified',
+                    symptoms,
+                    status: 'Processing',
+                    ...(selectedField !== 'none' && selectedField ? { fieldId: selectedField } : {}),
+                } as any),
+                createThumbnailDataUri(imageFile, 480, 0.65),
+                compressImage(imageFile, 1024, 0.8),
+            ]);
+            reportId = newReportId;
+            console.log("Phase 1 complete — Report ID:", reportId);
+
+            // Fire-and-forget: persist thumbnail and log (non-blocking)
+            updateReport(user.uid, reportId, { imageThumb } as any).catch(e => console.warn('Thumbnail update delayed:', e));
+            createLog({ agentName: 'ingestAgent', action: 'report_created', reportId, status: 'success' });
+
+            // Set report state for the loading UI
+            setReport({ id: reportId, imageUrl: imageThumb, imageThumb, symptoms } as any);
+
+            // Phase 2: AI Diagnosis (direct call, no useEffect state machine)
+            setLoadingState('diagnosing');
+            console.log("Phase 2 — Starting AI diagnosis...");
+
+            const photoDataUri = await blobToDataUri(analysisBlob);
+            const cropToAnalyze = selectedCrop && selectedCrop !== 'Auto' ? selectedCrop : (profile?.crops?.[0] || 'Unknown Crop');
+
+            createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_started', reportId, status: 'info' });
+
+            const diagnosis = await instantDiagnosisFromImageAndSymptoms({
+                photoDataUri,
                 symptoms,
-                status: 'Processing',
-            } as any);
-            console.log("Report created with ID:", reportId);
-
-            await createLog({ agentName: 'ingestAgent', action: 'report_created', reportId, status: 'success' });
-            
-            // 2. Store a small thumbnail in Firestore; Firebase Storage is optional
-            console.log("Creating report thumbnail...");
-            try {
-                const imageThumb = await createThumbnailDataUri(imageFile, 480, 0.65);
-                console.log("Generated thumbnail data URI (length):", imageThumb.length);
-                await updateReport(user.uid, reportId, { imageThumb } as any);
-                setReport({ id: reportId, imageUrl: imageThumb, imageThumb, symptoms } as any);
-                await createLog({ agentName: 'ingestAgent', action: 'thumbnail_stored', reportId, status: 'info', payload: { length: imageThumb.length } });
-            } catch (thumbErr: any) {
-                console.error("Thumbnail creation failed:", thumbErr);
-                setError('Image processing failed. Please try a smaller JPG or PNG image.');
-                setLoadingState('error');
-                await createLog({ agentName: 'ingestAgent', action: 'ingestion_failed', reportId, status: 'error', payload: { error: String(thumbErr) } });
-                return;
-            }
-
-            // The original imageFile remains available locally for Gemini analysis.
-            await createLog({
-                agentName: 'ingestAgent',
-                action: 'image_uploaded',
-                reportId: reportId,
-                status: 'success',
-                duration: Date.now() - startTime,
-                payload: { symptoms }
+                crop: cropToAnalyze,
+                language: profile?.language || 'english'
             });
 
-            console.log("Hagnosis state...");
-            // 4. Trigger the first agent
-            setLoadingState('diagnosing');
+            console.log(`✅ Diagnosis completed: ${diagnosis.disease}, confidence: ${diagnosis.confidence}%`);
+
+            // Phase 3: Single Firestore write with all diagnosis data + completion status
+            const isNotCrop = diagnosis.disease?.toLowerCase().includes('not a crop');
+            const diagnosedCrop = diagnosis.crop !== 'Unknown Crop' ? diagnosis.crop : cropToAnalyze;
+            const planEligible = isPlanEligible({
+                crop: diagnosedCrop,
+                disease: diagnosis.disease,
+                status: 'Complete',
+                imageThumb,
+            });
+
+            await updateReport(user.uid, reportId, {
+                crop: diagnosedCrop,
+                disease: diagnosis.disease,
+                confidence: diagnosis.confidence,
+                affectedParts: diagnosis.affectedParts,
+                severity: diagnosis.severity,
+                description: diagnosis.description,
+                ...(planEligible && diagnosis.plan ? { plan: diagnosis.plan } : {}),
+                ...(planEligible && diagnosis.protectionPlan ? { protectionPlan: diagnosis.protectionPlan } : {}),
+                visualHighlights: diagnosis.visualHighlights,
+                visualHighlightsReviewed: true,
+                expertReviewRequired: diagnosis.expertReviewRequired,
+                status: 'Complete',
+            } as any);
+
+            // Fire-and-forget: notifications and logging (non-blocking)
+            sendDiagnosisComplete(
+                user.uid,
+                reportId,
+                diagnosedCrop,
+                diagnosis.disease,
+                diagnosis.severity,
+                diagnosis.confidence
+            ).catch(console.warn);
+            if (!isNotCrop && diagnosis.plan && profile?.notificationPreferences?.treatmentReminders !== false && diagnosis.plan.steps?.[0]?.title) {
+                sendTreatmentReminder(user.uid, diagnosis.plan.steps[0].title, new Date()).catch(console.warn);
+            }
+            createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_completed', reportId, status: 'success', duration: Date.now() - startTime, payload: diagnosis });
+
+            // Update local state and finish
+            setReport(prev => prev ? {
+                ...prev,
+                ...diagnosis,
+                ...(planEligible ? {} : { plan: undefined, protectionPlan: undefined }),
+                status: 'Complete',
+            } : null);
+
+            if (isNotCrop) {
+                toast({ title: "Analysis Complete", description: "The image does not appear to be a plant. No treatment plan generated.", className: "bg-blue-100 text-blue-800" });
+            } else {
+                toast({ title: "Analysis Complete!", description: "Your complete report is now available.", className: "bg-green-100 text-green-800" });
+            }
+
+            window.dispatchEvent(new Event('reportCreated'));
+            // Redirect to the actual report page which has the full UI including Trend Analysis!
+            router.push(`/report/${reportId}`);
 
         } catch (error: any) {
-            console.error("Submission error:", error);
-            console.error("Error details:", {
-                message: error.message,
-                code: error.code,
-                stack: error.stack
-            });
-            setError(`Failed to start the diagnosis process: ${error.message}. Check your connection and try again.`);
-            setLoadingState('error');
+            console.error("Report generation error:", error);
+            const actualError = error?.message ? ` (${error.message})` : '';
+
             if (reportId) {
-                await createLog({ agentName: 'ingestAgent', action: 'ingestion_failed', reportId, status: 'error', payload: { error: error.message } });
+                updateReport(user.uid, reportId, { status: 'Pending' } as any).catch(e => console.warn('Failed to mark report Pending:', e));
+                createLog({ agentName: 'diagnosticAgent', action: 'diagnosis_failed', reportId, status: 'error', duration: Date.now() - startTime, payload: { error: error?.message || String(error) } });
             }
+
+            setError(`AI service is temporarily unavailable${actualError}. We've saved your report and will retry diagnosis. Please check back in a few minutes or try again.`);
+            setLoadingState('idle');
         }
     };
     
@@ -412,7 +379,7 @@ export default function NewReportForm() {
                 ) : (
                     <>
                         <DiagnosisCard diagnosis={report as any} imageUrl={imagePreview} />
-                        {report.plan && <TreatmentPlanCard plan={report.plan as any} />}
+                        {report.plan && <TreatmentPlanCard plan={report.plan as any} protectionPlan={report.protectionPlan as any} />}
                         <SuppliersCard />
                     </>
                 )}
@@ -650,6 +617,26 @@ export default function NewReportForm() {
                                         Selecting the specific crop helps the AI provide a more accurate diagnosis, especially for close-up leaf photos.
                                     </p>
                                 </div>
+                                
+                                {fields.length > 0 && (
+                                    <div className="space-y-2">
+                                        <Label htmlFor="field" className="text-sm font-medium text-gray-700">Link to Field/Plot (Optional)</Label>
+                                        <Select value={selectedField} onValueChange={setSelectedField}>
+                                            <SelectTrigger id="field" className="bg-white border-gray-200">
+                                                <SelectValue placeholder="Select a field for long-term monitoring" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="none">None (One-time report)</SelectItem>
+                                                {fields.map(f => (
+                                                    <SelectItem key={f.id} value={f.id}>{f.name} ({f.cropType})</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        <p className="text-xs text-gray-500">
+                                            Link this report to a field to track disease progression over time.
+                                        </p>
+                                    </div>
+                                )}
                                 
                                 <div className="space-y-2">
                                     <Label htmlFor="symptoms" className="text-sm font-medium text-gray-700">{t('new_report.symptoms_desc')}</Label>

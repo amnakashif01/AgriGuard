@@ -47,6 +47,7 @@ export default function SettingsPage() {
             i18n.changeLanguage(language);
             document.documentElement.lang = language === 'urdu' ? 'ur' : 'en';
             document.documentElement.dir = language === 'urdu' ? 'rtl' : 'ltr';
+            window.dispatchEvent(new Event('profileUpdated'));
             toast({
                 title: t('settings.saved'),
                 description: t('settings.saved'),

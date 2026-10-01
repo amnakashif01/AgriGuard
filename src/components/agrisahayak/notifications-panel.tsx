@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bell, X, Check, AlertTriangle, Cloud, DollarSign, Shield, Info } from "lucide-react";
+import { Bell, X, Check, AlertTriangle, Cloud, DollarSign, Shield, Info, ClipboardCheck, ArrowRight } from "lucide-react";
+import Link from "next/link";
 import { 
   getUserNotifications, 
   markNotificationAsRead, 
@@ -28,9 +29,19 @@ export default function NotificationsPanel() {
   }, [user]);
 
   useEffect(() => {
-    const handleNotificationCreated = () => fetchNotifications();
+    const handleNotificationCreated = () => { void fetchNotifications(); };
+    const handleFocus = () => { if (user) void fetchNotifications(); };
+    const handleVisibilityChange = () => {
+      if (user && document.visibilityState === 'visible') void fetchNotifications();
+    };
     window.addEventListener('notificationCreated', handleNotificationCreated);
-    return () => window.removeEventListener('notificationCreated', handleNotificationCreated);
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('notificationCreated', handleNotificationCreated);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [user]);
 
   const fetchNotifications = async () => {
@@ -78,6 +89,8 @@ export default function NotificationsPanel() {
         return <Shield className="h-4 w-4 text-green-500" />;
       case NotificationType.MARKET_UPDATE:
         return <DollarSign className="h-4 w-4 text-yellow-500" />;
+      case NotificationType.DIAGNOSIS_COMPLETE:
+        return <ClipboardCheck className="h-4 w-4 text-emerald-600" />;
       case NotificationType.SYSTEM_UPDATE:
         return <Info className="h-4 w-4 text-gray-500" />;
       default:
@@ -204,6 +217,15 @@ export default function NotificationsPanel() {
                         }`}>
                           {notification.body}
                         </p>
+                        {notification.data?.reportId && (
+                          <Link
+                            href={`/report/${notification.data.reportId}`}
+                            onClick={() => handleMarkAsRead(notification.id)}
+                            className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800"
+                          >
+                            View report <ArrowRight className="h-3.5 w-3.5" />
+                          </Link>
+                        )}
                       </div>
                       
                       <div className="flex items-center gap-2 flex-shrink-0">
@@ -233,7 +255,7 @@ export default function NotificationsPanel() {
                       
                       {notification.data && Object.keys(notification.data).length > 0 && (
                         <div className="flex gap-1">
-                          {Object.entries(notification.data).map(([key, value]) => (
+                          {Object.entries(notification.data).filter(([key]) => key !== 'reportId').map(([key, value]) => (
                             <Badge key={key} variant="outline" className="text-xs">
                               {key}: {value}
                             </Badge>

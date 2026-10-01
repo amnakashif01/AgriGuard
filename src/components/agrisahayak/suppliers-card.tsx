@@ -25,6 +25,7 @@ export default function SuppliersCard({ searchQuery = '', filterType = 'all' }: 
     const [locationLoading, setLocationLoading] = useState(true);
     const [locationError, setLocationError] = useState<string | null>(null);
     const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
+    const [profileLoaded, setProfileLoaded] = useState(false);
 
     // Debounce the search query to prevent spamming the API on every keystroke
     useEffect(() => {
@@ -34,88 +35,74 @@ export default function SuppliersCard({ searchQuery = '', filterType = 'all' }: 
         return () => clearTimeout(timer);
     }, [searchQuery]);
 
-    // Get user's real-time GPS location
+    // Load the saved location before asking for a GPS location.
     useEffect(() => {
-        const getUserLocation = async () => {
-            setLocationLoading(true);
-            
-            // First, try to get location from user profile
-            if (profile?.lat && profile?.lon) {
-                setUserLocation({
-                    lat: profile.lat,
-                    lng: profile.lon,
-                    city: profile.location || undefined
-                });
+        let cancelled = false;
+        setProfileLoaded(false);
+        setLocationLoading(true);
+        setUserLocation(null);
+        if (!user) {
+            setProfile(null);
+            setProfileLoaded(true);
+            return () => { cancelled = true; };
+        }
+
+        getProfile(user.uid)
+            .then(value => { if (!cancelled) setProfile(value); })
+            .finally(() => { if (!cancelled) setProfileLoaded(true); });
+
+        return () => { cancelled = true; };
+    }, [user]);
+
+    // Prefer one stable saved location; only geolocate after profile loading completes.
+    useEffect(() => {
+        if (!profileLoaded) return;
+        let cancelled = false;
+        setLocationLoading(true);
+
+        const resolveLocation = async () => {
+            if (profile?.lat != null && profile?.lon != null) {
+                setUserLocation({ lat: profile.lat, lng: profile.lon, city: profile.location || undefined });
+                setLocationError(null);
                 setLocationLoading(false);
                 return;
             }
-            
-            // If not in profile, try to get browser geolocation
+
             if ('geolocation' in navigator) {
                 try {
                     const position = await new Promise<GeolocationPosition>((resolve, reject) => {
                         navigator.geolocation.getCurrentPosition(resolve, reject, {
                             enableHighAccuracy: true,
                             timeout: 10000,
-                            maximumAge: 300000 // 5 minutes cache
+                            maximumAge: 300000,
                         });
                     });
-                    
                     const { latitude, longitude } = position.coords;
-                    
-                    // Reverse geocode to get city name
                     const city = await getCityFromCoordinates(latitude, longitude);
-                    
-                    setUserLocation({
-                        lat: latitude,
-                        lng: longitude,
-                        city
-                    });
-                    
-                    // Save the exact coordinates to the user's profile for future use
-                    if (user && profile && (!profile.lat || !profile.lon)) {
-                        upsertProfile({
-                            uid: user.uid,
-                            phone: profile.phone,
-                            lat: latitude,
-                            lon: longitude,
-                            location: city
-                        }).catch(e => console.warn('Failed to save location to profile:', e));
-                    }
-                    
+                    if (cancelled) return;
+                    setUserLocation({ lat: latitude, lng: longitude, city });
                     setLocationError(null);
+                    if (user && profile && (profile.lat == null || profile.lon == null)) {
+                        upsertProfile({ uid: user.uid, phone: profile.phone, lat: latitude, lon: longitude, location: city })
+                            .catch(error => console.warn('Failed to save location to profile:', error));
+                    }
                 } catch (error) {
+                    if (cancelled) return;
                     console.warn('Geolocation error:', error);
                     setLocationError('Unable to get your location. Using default location.');
-                    
-                    // Fallback to default location (Lahore, Pakistan)
-                    setUserLocation({
-                        lat: 31.5204,
-                        lng: 74.3587,
-                        city: 'Lahore'
-                    });
+                    setUserLocation({ lat: 31.5204, lng: 74.3587, city: 'Lahore' });
                 }
             } else {
                 setLocationError('Geolocation not supported by browser');
-                // Fallback to default location
-                setUserLocation({
-                    lat: 31.5204,
-                    lng: 74.3587,
-                    city: 'Lahore'
-                });
+                setUserLocation({ lat: 31.5204, lng: 74.3587, city: 'Lahore' });
             }
-            
-            setLocationLoading(false);
-        };
-        
-        getUserLocation();
-    }, [profile]);
 
-    useEffect(() => {
-        if (user && !profile) {
-            getProfile(user.uid).then(setProfile);
-        }
-    }, [user, profile]);
+            if (!cancelled) setLocationLoading(false);
+        };
+
+        void resolveLocation();
+        return () => { cancelled = true; };
+    }, [profileLoaded, profile, user]);
 
     useEffect(() => {
         let cancel = false;
@@ -135,7 +122,7 @@ export default function SuppliersCard({ searchQuery = '', filterType = 'all' }: 
                 
                 const data = await response.json();
                 
-                if (!cancel && data.success && data.suppliers) {
+                if (!cancel && data.success && Array.isArray(data.suppliers) && data.suppliers.length > 0) {
                     // Trust the backend/API to have filtered the results properly based on the query.
                     // This prevents hiding valid results from Google Places that didn't have the exact keyword hardcoded in their products list.
                     let visibleSuppliers = data.suppliers as Supplier[];
@@ -326,6 +313,7 @@ const SupplierCard = ({ supplier, index }: { supplier: Supplier, index: number }
         if (rating >= 4.5) return 'Excellent';
         if (rating >= 4.0) return 'Good';
         if (rating >= 3.5) return 'Fair';
+        if (rating <= 0) return 'No rating';
         return 'Poor';
     };
 

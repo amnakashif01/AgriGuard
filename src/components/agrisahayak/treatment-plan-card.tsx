@@ -8,9 +8,10 @@ import { Progress } from "@/components/ui/progress";
 
 type TreatmentPlanCardProps = {
     plan: NonNullable<InstantDiagnosisFromImageAndSymptomsOutput['plan']>;
+    protectionPlan?: InstantDiagnosisFromImageAndSymptomsOutput['protectionPlan'];
 };
 
-export default function TreatmentPlanCard({ plan }: TreatmentPlanCardProps) {
+export default function TreatmentPlanCard({ plan, protectionPlan }: TreatmentPlanCardProps) {
     const totalSteps = plan.steps.length;
     const completedSteps = 0; // This would come from user progress tracking
     
@@ -156,6 +157,58 @@ export default function TreatmentPlanCard({ plan }: TreatmentPlanCardProps) {
                         ))}
                     </div>
                 </div>
+
+                {protectionPlan && (
+                    <>
+                        <Separator className="my-8" />
+                        <div className="bg-white rounded-xl p-6 border shadow-sm">
+                            <h3 className="font-bold text-xl mb-4 flex items-center gap-3 text-indigo-900">
+                                <div className="p-2 bg-indigo-100 rounded-lg">
+                                    <ShieldAlert className="h-6 w-6 text-indigo-600"/>
+                                </div>
+                                1-Month Protection & Recovery Plan
+                            </h3>
+                            <p className="text-gray-600 mb-6">{protectionPlan.duration} guided recovery plan</p>
+                            
+                            <div className="space-y-4 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300 before:to-transparent">
+                                {protectionPlan.phases.map((phase, index) => (
+                                    <div key={index} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                                        <div className="flex items-center justify-center w-10 h-10 rounded-full border border-white bg-indigo-100 text-indigo-600 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 font-bold z-10">
+                                            W{phase.week}
+                                        </div>
+                                        <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded-xl border border-indigo-100 bg-white shadow-sm">
+                                            <div className="flex items-center justify-between space-x-2 mb-1">
+                                                <div className="font-bold text-slate-900">Week {phase.week}: {phase.title}</div>
+                                            </div>
+                                            <ul className="text-slate-600 text-sm mt-2 space-y-1">
+                                                {phase.tasks.map((task, tIdx) => (
+                                                    <li key={tIdx} className="flex items-start gap-2">
+                                                        <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full mt-1.5 shrink-0" />
+                                                        <span>{task}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            
+                            {protectionPlan.recommendations && protectionPlan.recommendations.length > 0 && (
+                                <div className="mt-8 bg-indigo-50/50 p-4 rounded-lg border border-indigo-100">
+                                    <h4 className="font-semibold text-indigo-800 mb-2">Long-term Recommendations</h4>
+                                    <ul className="space-y-2">
+                                        {protectionPlan.recommendations.map((rec, idx) => (
+                                            <li key={idx} className="flex items-start gap-2 text-sm text-indigo-900/80">
+                                                <CheckCircle className="h-4 w-4 text-indigo-400 mt-0.5 shrink-0" />
+                                                <span>{rec}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    </>
+                )}
             </CardContent>
             
             <CardFooter className="bg-gradient-to-r from-gray-50 to-gray-100 p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 rounded-b-lg border-t">

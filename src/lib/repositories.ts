@@ -1,6 +1,6 @@
-import { collection, doc, getDoc, getDocs, getDocsFromServer, setDoc, updateDoc, query, orderBy, limit, where, serverTimestamp, getDocFromCache, addDoc, getCountFromServer } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, getDocsFromServer, setDoc, updateDoc, query, orderBy, limit, where, serverTimestamp, getDocFromCache, addDoc, getCountFromServer, arrayUnion, deleteDoc } from 'firebase/firestore';
 import { getDb, getApp } from './firestore';
-import type { UserProfile, DiagnosisReport, AdminLog, Supplier } from './models';
+import type { UserProfile, DiagnosisReport, AdminLog, Supplier, ReportHistoryEntry } from './models';
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const FIRESTORE_WRITE_TIMEOUT_MS = 8000;
@@ -88,11 +88,32 @@ export async function createReport(uid: string, data: Omit<DiagnosisReport, 'id'
   const reportsCollection = collection(db, 'users', uid, 'reports');
   const docRef = doc(reportsCollection); // Generate ID synchronously
   
-  // Use client timestamp as fallback in case serverTimestamp hangs
   const now = new Date().toISOString();
   
+  // Clean undefined from data to prevent Firestore errors
+  const cleanData = { ...data };
+  Object.keys(cleanData).forEach(key => {
+    if (cleanData[key as keyof typeof cleanData] === undefined) {
+      delete cleanData[key as keyof typeof cleanData];
+    }
+  });
+  
+  // Initial history entry
+  const initialHistory: ReportHistoryEntry[] = [{
+    changedAt: now,
+    action: 'Report Created',
+    newData: {
+      ...(cleanData.disease !== undefined && { disease: cleanData.disease }),
+      ...(cleanData.confidence !== undefined && { confidence: cleanData.confidence }),
+      ...(cleanData.severity !== undefined && { severity: cleanData.severity }),
+      status: cleanData.status ?? 'Processing',
+      ...(cleanData.crop !== undefined && { crop: cleanData.crop }),
+      ...(cleanData.description !== undefined && { description: cleanData.description }),
+    },
+  }];
+
         await writeWithTimeout(
-            setDoc(docRef, { uid, ...data, status: data.status ?? 'Processing', createdAt: now, updatedAt: now } as any),
+            setDoc(docRef, { uid, ...cleanData, status: cleanData.status ?? 'Processing', createdAt: now, updatedAt: now, history: initialHistory } as any),
             'Report creation'
         );
     
@@ -103,8 +124,58 @@ export async function updateReport(uid: string, reportId: string, data: Partial<
     const db = getDb();
     const ref = doc(db, 'users', uid, 'reports', reportId);
     const now = new Date().toISOString();
+
+    const existingSnap = await readWithTimeout(getDoc(ref), 'Report history snapshot');
+    const existingData = existingSnap?.exists() ? existingSnap.data() as Partial<DiagnosisReport> : undefined;
     
-    await writeWithTimeout(updateDoc(ref, { ...data, updatedAt: now }), 'Report update');
+    // Clean undefined from data to prevent Firestore errors
+    const cleanData = { ...data };
+    Object.keys(cleanData).forEach(key => {
+      if (cleanData[key as keyof typeof cleanData] === undefined) {
+        delete cleanData[key as keyof typeof cleanData];
+      }
+    });
+
+    // Build a history entry capturing what changed
+    const historyEntry: ReportHistoryEntry = {
+        changedAt: now,
+        action: cleanData.status === 'Complete' ? 'Diagnosis Completed'
+              : cleanData.status === 'Processing' ? 'Re-analysis Started'
+              : cleanData.status === 'Error' ? 'Error Occurred'
+              : 'Report Updated',
+        ...(existingData && { previousData: {
+            ...(cleanData.disease !== undefined && existingData.disease !== undefined && { disease: existingData.disease }),
+            ...(cleanData.confidence !== undefined && existingData.confidence !== undefined && { confidence: existingData.confidence }),
+            ...(cleanData.severity !== undefined && existingData.severity !== undefined && { severity: existingData.severity }),
+            ...(cleanData.status !== undefined && existingData.status !== undefined && { status: existingData.status }),
+            ...(cleanData.crop !== undefined && existingData.crop !== undefined && { crop: existingData.crop }),
+            ...(cleanData.description !== undefined && existingData.description !== undefined && { description: existingData.description }),
+        } }),
+        newData: {
+            ...(cleanData.disease !== undefined && { disease: cleanData.disease }),
+            ...(cleanData.confidence !== undefined && { confidence: cleanData.confidence }),
+            ...(cleanData.severity !== undefined && { severity: cleanData.severity }),
+            ...(cleanData.status !== undefined && { status: cleanData.status }),
+            ...(cleanData.crop !== undefined && { crop: cleanData.crop }),
+            ...(cleanData.description !== undefined && { description: cleanData.description }),
+        },
+    };
+    
+    await writeWithTimeout(
+        updateDoc(ref, { 
+            ...cleanData, 
+            updatedAt: now,
+            // Append to history array (arrayUnion handles Firestore atomically)
+            history: arrayUnion(historyEntry),
+        }),
+        'Report update'
+    );
+}
+
+export async function deleteReport(uid: string, reportId: string): Promise<void> {
+    const db = getDb();
+    const ref = doc(db, 'users', uid, 'reports', reportId);
+    await writeWithTimeout(deleteDoc(ref), 'Report deletion');
 }
 
 
@@ -155,6 +226,48 @@ export async function getTotalReportsCount(uid: string): Promise<number> {
     console.warn("Failed to get total reports count:", error);
     return 0;
   }
+}
+
+// Fields
+export async function createField(uid: string, data: Omit<import('./models').Field, 'id' | 'uid' | 'createdAt' | 'updatedAt'>): Promise<string> {
+    const db = getDb();
+    const fieldsRef = collection(db, 'users', uid, 'fields');
+    const docRef = doc(fieldsRef);
+    const now = new Date().toISOString();
+    
+    await writeWithTimeout(
+        setDoc(docRef, { ...data, uid, createdAt: now, updatedAt: now } as any),
+        'Field creation'
+    );
+    return docRef.id;
+}
+
+export async function listFields(uid: string): Promise<import('./models').Field[]> {
+    const db = getDb();
+    const ref = collection(db, 'users', uid, 'fields');
+    const q = query(ref, orderBy('createdAt', 'desc'));
+    
+    try {
+        const snap = await getDocs(q);
+        return snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+    } catch (e) {
+        console.warn("Failed to fetch fields:", e);
+        return [];
+    }
+}
+
+export async function getField(uid: string, fieldId: string): Promise<import('./models').Field | null> {
+    const db = getDb();
+    const ref = doc(db, 'users', uid, 'fields', fieldId);
+    
+    try {
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return null;
+        return { id: snap.id, ...snap.data() } as import('./models').Field;
+    } catch (e) {
+        console.warn("Failed to get field:", e);
+        return null;
+    }
 }
 
 export async function getDashboardStats(uid: string): Promise<{total: number, completed: number, highSeverity: number, thisMonth: number}> {

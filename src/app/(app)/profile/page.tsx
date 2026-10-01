@@ -15,7 +15,6 @@ import { useAuth } from "@/firebase";
 import { getProfile, upsertProfile } from "@/lib/repositories";
 import { useToast } from "@/hooks/use-toast";
 import i18n from "@/lib/i18n/config";
-import { sendWeatherAlert, sendDiseaseWarning, sendMarketUpdate } from "@/lib/notifications";
 
 export default function ProfilePage() {
     const presetCrops = ["Cotton", "Wheat", "Rice", "Sugarcane", "Maize"];
@@ -86,33 +85,6 @@ export default function ProfilePage() {
             window.dispatchEvent(new Event('profileUpdated'));
         } finally {
             setIsSavingPrefs(false);
-        }
-    };
-
-    const handleTestNotification = async (type: 'weather' | 'disease' | 'market') => {
-        if (!user) {
-            toast({ title: "Error", description: "You must be logged in to send notifications", variant: "destructive" });
-            return;
-        }
-
-        try {
-            switch (type) {
-                case 'weather':
-                    await sendWeatherAlert(user.uid, location || 'Faisalabad', 'Heavy rainfall expected in the next 24 hours. Protect sensitive crops.', 'high');
-                    toast({ title: "Notification Sent", description: "A test weather alert has been sent to your notifications panel." });
-                    break;
-                case 'disease':
-                    await sendDiseaseWarning(user.uid, crops[0] || 'Wheat', 'Leaf Rust', location || 'your area');
-                    toast({ title: "Notification Sent", description: "A test disease warning has been sent to your notifications panel." });
-                    break;
-                case 'market':
-                    await sendMarketUpdate(user.uid, crops[0] || 'Wheat', '4,200 PKR/40kg', 'up');
-                    toast({ title: "Notification Sent", description: "A test market update has been sent to your notifications panel." });
-                    break;
-            }
-        } catch (error) {
-            console.error('Failed to send test notification:', error);
-            toast({ title: "Error", description: "Failed to send notification. Check console.", variant: "destructive" });
         }
     };
 
@@ -216,27 +188,6 @@ export default function ProfilePage() {
                         {isSavingPrefs ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Save className="me-2 h-4 w-4" />}
                         {isSavingPrefs ? "Saving..." : "Save Preferences"}
                      </Button>
-                </CardContent>
-            </Card>
-
-            <Card className="border-emerald-200 shadow-sm">
-                <CardHeader>
-                    <CardTitle className="text-emerald-700">Test Notifications</CardTitle>
-                    <CardDescription>Click the buttons below to simulate receiving notifications in your dashboard panel.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    <p className="text-sm text-muted-foreground">Since automated background checks are not enabled, use these buttons to test the notification system.</p>
-                    <div className="flex flex-wrap gap-4">
-                        <Button variant="outline" className="border-amber-200 text-amber-700 hover:bg-amber-50" onClick={() => handleTestNotification('weather')}>
-                            Test Weather Alert
-                        </Button>
-                        <Button variant="outline" className="border-red-200 text-red-700 hover:bg-red-50" onClick={() => handleTestNotification('disease')}>
-                            Test Disease Warning
-                        </Button>
-                        <Button variant="outline" className="border-emerald-200 text-emerald-700 hover:bg-emerald-50" onClick={() => handleTestNotification('market')}>
-                            Test Market Update
-                        </Button>
-                    </div>
                 </CardContent>
             </Card>
 

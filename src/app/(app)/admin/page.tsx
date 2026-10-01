@@ -6,14 +6,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
-import { Activity, Users, FileCheck, Clock, RefreshCw } from "lucide-react";
+import { Activity, Users, FileCheck, Clock, RefreshCw, Shield, Lock } from "lucide-react";
 import { useEffect, useState, useCallback } from "react";
 import { listLogs, getDailyReportCounts, getAdminDashboardStats } from "@/lib/repositories";
 import { AdminLog } from "@/lib/models";
 import LoadingSpinner from "@/components/agrisahayak/loading-spinner";
+import { useAuth } from "@/firebase";
+import Link from "next/link";
 
 
 export default function AdminPage() {
+    const { isAdmin, isUserLoading } = useAuth();
     const [logs, setLogs] = useState<AdminLog[]>([]);
     const [chartData, setChartData] = useState<{date: string, reports: number}[]>([]);
     const [adminStats, setAdminStats] = useState<{totalReportsToday: number, activeUsers: number, avgConfidence: string, avgResponseTime: string}>({
@@ -42,24 +45,52 @@ export default function AdminPage() {
     }, []);
 
     useEffect(() => {
-        fetchData();
-    }, [fetchData]);
+        if (isAdmin) {
+            fetchData();
+        } else if (!isUserLoading) {
+            setLoading(false);
+        }
+    }, [fetchData, isAdmin, isUserLoading]);
 
     // Auto-refresh every 30 seconds
     useEffect(() => {
+        if (!isAdmin) return;
         const interval = setInterval(() => fetchData(), 30000);
         return () => clearInterval(interval);
-    }, [fetchData]);
+    }, [fetchData, isAdmin]);
 
     // Listen for reportCreated events to refresh data
     useEffect(() => {
         const handleReportCreated = () => {
-            console.log('📊 Admin: reportCreated event received, refreshing...');
-            fetchData(true);
+            if (isAdmin) {
+                console.log('📊 Admin: reportCreated event received, refreshing...');
+                fetchData(true);
+            }
         };
         window.addEventListener('reportCreated', handleReportCreated);
         return () => window.removeEventListener('reportCreated', handleReportCreated);
-    }, [fetchData]);
+    }, [fetchData, isAdmin]);
+
+    // ── ACCESS DENIED for non-admin users ──────────────────────────────────
+    if (!isUserLoading && !isAdmin) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-6">
+                <div className="p-6 bg-red-50 rounded-3xl border-2 border-red-100">
+                    <Lock className="h-16 w-16 text-red-400 mx-auto mb-4" />
+                    <h1 className="text-2xl font-bold text-center text-red-700">Access Denied</h1>
+                    <p className="text-red-500 text-center mt-2 max-w-sm">
+                        You do not have permission to access the Admin Dashboard.
+                        This area is restricted to administrators only.
+                    </p>
+                    <div className="mt-6 flex justify-center">
+                        <Button asChild variant="outline" className="border-red-200 text-red-700 hover:bg-red-50">
+                            <Link href="/dashboard">← Back to Dashboard</Link>
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     const getStatusVariant = (status: 'success' | 'error' | 'info') => {
         switch(status) {
@@ -73,18 +104,15 @@ export default function AdminPage() {
     /** Safely format a timestamp from Firestore Timestamp OR ISO string */
     const formatTimestamp = (ts: any): string => {
         if (!ts) return 'Unknown';
-        // Firestore Timestamp object
         if (typeof ts?.toDate === 'function') {
             return ts.toDate().toLocaleString();
         }
-        // ISO string
         if (typeof ts === 'string') {
             const parsed = new Date(ts);
             if (!isNaN(parsed.getTime())) {
                 return parsed.toLocaleString();
             }
         }
-        // Number timestamp
         if (typeof ts === 'number') {
             return new Date(ts).toLocaleString();
         }
@@ -94,7 +122,15 @@ export default function AdminPage() {
     return (
         <div className="space-y-8">
             <div className="flex items-center justify-between">
-                <h1 className="text-3xl font-bold font-headline">Admin Dashboard</h1>
+                <div className="flex items-center gap-3">
+                    <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl shadow">
+                        <Shield className="h-5 w-5 text-white" />
+                    </div>
+                    <div>
+                        <h1 className="text-3xl font-bold font-headline">Admin Dashboard</h1>
+                        <p className="text-sm text-muted-foreground">Restricted to administrators only</p>
+                    </div>
+                </div>
                 <Button
                     variant="outline"
                     size="sm"
@@ -149,7 +185,7 @@ export default function AdminPage() {
                     </div>
                 </CardContent>
             </Card>
-            
+
             <Card>
                 <CardHeader>
                     <CardTitle>Agent Activity Logs</CardTitle>

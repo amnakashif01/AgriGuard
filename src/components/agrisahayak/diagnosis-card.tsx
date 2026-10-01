@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { Bot, AlertTriangle, Leaf } from "lucide-react";
+import CropImageHighlights from "./crop-image-highlights";
 
 type DiagnosisCardProps = {
     diagnosis: InstantDiagnosisFromImageAndSymptomsOutput;
@@ -47,19 +48,34 @@ export default function DiagnosisCard({ diagnosis, imageUrl }: DiagnosisCardProp
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     {/* Image Section */}
                     <div className="space-y-4">
-                        <div className="relative group">
-                            <img
+                        <div className="relative w-full overflow-hidden rounded-xl shadow-lg transition-shadow duration-300 bg-black/5">
+                            <CropImageHighlights
                                 src={imageUrl}
-                                alt="Uploaded image"
-                                width={500}
-                                height={400}
-                                className="rounded-xl object-cover w-full h-80 shadow-lg group-hover:shadow-xl transition-shadow duration-300"
-                                data-ai-hint="crop disease"
+                                alt="Uploaded crop with detected affected areas highlighted"
+                                highlights={diagnosis.visualHighlights}
+                                showEmptyState={!isNotCrop && diagnosis.severity !== 'None'}
                             />
                             <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
                                 <span className="text-sm font-medium text-gray-700">Uploaded Image</span>
                             </div>
                         </div>
+                        
+                        {/* List out all reasonings below the image instead of cluttering the image itself */}
+                        {(diagnosis.visualHighlights || []).length > 0 && (
+                            <div className="mt-3 space-y-2">
+                                {(diagnosis.visualHighlights || []).map((highlight, idx) => (
+                                    highlight.reasoning && (
+                                        <div key={idx} className="text-sm text-amber-800 bg-amber-50 p-2.5 rounded-lg border border-amber-100 flex items-start gap-2 shadow-sm transition-all hover:shadow-md">
+                                            <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
+                                            <p className="font-medium">
+                                                <span className="font-bold text-amber-900 mr-2">Target {idx + 1}:</span>
+                                                {highlight.reasoning}
+                                            </p>
+                                        </div>
+                                    )
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {/* Diagnosis Details */}
@@ -99,12 +115,12 @@ export default function DiagnosisCard({ diagnosis, imageUrl }: DiagnosisCardProp
                                     
                                     <div className="p-4 bg-gray-50 rounded-xl">
                                         <h4 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                                            <Leaf className="h-4 w-4" />
+                                            <Leaf className="h-4 w-4 text-emerald-600" />
                                             Affected Parts
                                         </h4>
-                                        <div className="flex flex-wrap gap-1">
+                                        <div className="flex flex-wrap gap-2">
                                             {diagnosis.affectedParts.map((part, index) => (
-                                                <Badge key={index} variant="outline" className="text-xs">
+                                                <Badge key={index} variant="secondary" className="text-sm px-3 py-1 bg-emerald-100 text-emerald-800 border border-emerald-200 hover:bg-emerald-200 shadow-sm transition-colors">
                                                     {part}
                                                 </Badge>
                                             ))}

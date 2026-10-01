@@ -21,7 +21,7 @@ async function test() {
       model: 'googleai/gemini-3.6-flash',
       prompt: 'Hello',
     });
-  } catch (e) {
+  } catch (e: any) {
     console.log('Error expected:', e.message);
   }
 }

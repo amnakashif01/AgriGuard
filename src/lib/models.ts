@@ -14,8 +14,8 @@ export type UserProfile = {
     priceUpdates?: boolean;
     treatmentReminders?: boolean;
   };
-  createdAt: any; // Firestore serverTimestamp
-  updatedAt: any; // Firestore serverTimestamp
+  createdAt: any; // Firestore serverTimestamp or ISO string
+  updatedAt: any; // Firestore serverTimestamp or ISO string
 };
 
 export type TreatmentStep = {
@@ -28,9 +28,47 @@ export type TreatmentStep = {
   safetyNotes: string;
 };
 
+export type ProtectionPlanPhase = {
+  week: number;
+  title: string;
+  tasks: string[];
+};
+
+export type ProtectionPlan = {
+  duration: string;
+  phases: ProtectionPlanPhase[];
+  recommendations: string[];
+};
+
+/** A single history entry recording what changed in a report and when */
+export type ReportHistoryEntry = {
+  /** When this change was made (ISO string) */
+  changedAt: string;
+  /** Short summary of what was changed */
+  action: string;
+  /** Previous snapshot of key fields before the change */
+  previousData?: {
+    disease?: string;
+    confidence?: number;
+    severity?: string;
+    status?: string;
+    crop?: string;
+    description?: string;
+  };
+  /** New values that were set */
+  newData?: {
+    disease?: string;
+    confidence?: number;
+    severity?: string;
+    status?: string;
+    crop?: string;
+    description?: string;
+  };
+};
+
 export type DiagnosisReport = {
   id: string;
-  uid:string;
+  uid: string;
   crop?: string;
   imageThumb?: string;
   symptoms?: string;
@@ -46,7 +84,52 @@ export type DiagnosisReport = {
     timeline: string;
     preventionTips: string[];
   };
+  protectionPlan?: ProtectionPlan;
+  /** Weather conditions at time of report creation (if available) */
+  weather?: {
+    location?: string;
+    temperature?: string;
+    condition?: string;
+    humidity?: string;
+    alerts?: string[];
+    fetchedAt?: string;
+  };
+  /** Dynamic translations generated via AI */
+  translations?: Record<string, {
+    disease: string;
+    description: string;
+    affectedParts: string[];
+    plan?: any;
+    protectionPlan?: any;
+  }>;
   status: 'Complete' | 'Processing' | 'Error' | 'Pending';
+  /** Ordered list of changes: oldest first, newest last */
+  history?: ReportHistoryEntry[];
+  visualHighlights?: {
+    boundingBox: number[];
+    reasoning: string;
+  }[];
+  visualHighlightsReviewed?: boolean;
+  visualHighlight?: { // Backwards compatibility for old reports
+    boundingBox?: { ymin: number; xmin: number; ymax: number; xmax: number; };
+    reasoning: string;
+  };
+  expertReviewRequired?: boolean;
+  fieldId?: string;
+  createdAt: any; // ISO string
+  updatedAt: any; // ISO string
+};
+
+export type Field = {
+  id: string;
+  uid: string;
+  name: string;
+  cropType: string;
+  variety?: string;
+  plantingDate?: string;
+  location?: string;
+  growthStage?: string;
+  notes?: string;
   createdAt: any;
   updatedAt: any;
 };

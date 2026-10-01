@@ -20,9 +20,17 @@ import { useTranslation } from "react-i18next";
 export default function AppLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
-    const { user, isUserLoading, auth } = useAuth();
+    const { user, isUserLoading, auth, isAdmin } = useAuth();
     const [profile, setProfile] = useState<UserProfile | null>(null);
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
+
+    useEffect(() => {
+        if (profile?.language) {
+            i18n.changeLanguage(profile.language);
+            document.documentElement.lang = profile.language === 'urdu' ? 'ur' : 'en';
+            document.documentElement.dir = profile.language === 'urdu' ? 'rtl' : 'ltr';
+        }
+    }, [profile?.language, i18n]);
 
     // Auth guard: redirect unauthenticated users to login
     useEffect(() => {
@@ -94,12 +102,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     const breadcrumbs = generateBreadcrumbs();
 
+    // Only show Admin tab to admin phone numbers
     const menuItems = [
         { href: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
         { href: '/report/new', label: t('nav.new_report'), icon: PlusCircle },
         { href: '/marketplace', label: t('nav.marketplace'), icon: ShoppingCart },
         { href: '/profile', label: t('nav.profile'), icon: User },
-        { href: '/admin', label: t('nav.admin'), icon: Shield },
+        ...(isAdmin ? [{ href: '/admin', label: t('nav.admin'), icon: Shield }] : []),
     ];
 
     return (

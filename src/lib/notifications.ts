@@ -44,6 +44,7 @@ export enum NotificationType {
   DISEASE_WARNING = 'disease_warning',
   TREATMENT_REMINDER = 'treatment_reminder',
   MARKET_UPDATE = 'market_update',
+  DIAGNOSIS_COMPLETE = 'diagnosis_complete',
   SYSTEM_UPDATE = 'system_update'
 }
 
@@ -140,6 +141,7 @@ export async function sendNotification(
     
   } catch (error) {
     console.error('Error sending notification:', error);
+    throw error;
   }
 }
 
@@ -186,7 +188,7 @@ export async function getUserNotifications(
     } catch (queryError) {
       // Keep the panel usable when the composite Firestore index is not deployed.
       console.warn('Notification index unavailable, using an unordered query:', queryError);
-      const fallbackQuery = query(notificationsRef, where('userId', '==', userId), limit(limitCount));
+      const fallbackQuery = query(notificationsRef, where('userId', '==', userId));
       snapshot = await getDocs(fallbackQuery);
     }
 
@@ -194,7 +196,9 @@ export async function getUserNotifications(
       ...doc.data(),
       createdAt: doc.data().createdAt?.toDate?.() || new Date(doc.data().createdAt),
       scheduledFor: doc.data().scheduledFor?.toDate?.() || doc.data().scheduledFor
-    })) as NotificationData[];
+    }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limitCount) as NotificationData[];
     
   } catch (error) {
     console.error('Error getting notifications:', error);
@@ -296,6 +300,36 @@ export async function sendDiseaseWarning(
     `${disease} detected in ${crop} crops near ${location}. Take immediate action.`,
     { crop, disease, location },
     'high'
+  );
+}
+
+export async function sendDiagnosisComplete(
+  userId: string,
+  reportId: string,
+  crop: string,
+  disease: string,
+  severity: string,
+  confidence: number
+): Promise<void> {
+  const isNotCrop = /not a crop|not a plant/i.test(disease);
+  const isHealthy = /healthy/i.test(disease) || severity === 'None';
+  const title = isNotCrop
+    ? 'Image analysis complete'
+    : isHealthy
+      ? `Healthy crop report ready: ${crop}`
+      : `Diagnosis ready: ${disease}`;
+  const body = isNotCrop
+    ? 'The uploaded image was not identified as a crop. Open the report to review the result.'
+    : `${crop}: ${disease}. Severity: ${severity}. Confidence: ${confidence}%. Open the report for details.`;
+  const priority = severity === 'High' ? 'high' : 'normal';
+
+  await sendNotification(
+    userId,
+    NotificationType.DIAGNOSIS_COMPLETE,
+    title,
+    body,
+    { reportId, crop, disease, severity, confidence: String(confidence) },
+    priority
   );
 }
 

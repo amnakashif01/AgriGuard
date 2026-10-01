@@ -17,6 +17,9 @@ import { instantDiagnosisFromImageAndSymptoms } from "@/ai/flows/instant-diagnos
 
 import LoadingSpinner from "./loading-spinner";
 import { useToast } from "@/hooks/use-toast";
+import { deleteField } from "firebase/firestore";
+import { isPlanEligible } from "@/lib/report-utils";
+import { sendDiagnosisComplete } from "@/lib/notifications";
 
 /** Safely format a date from Firestore Timestamp OR ISO string */
 function formatDate(d: any): string {
@@ -195,6 +198,11 @@ export default function RecentReports({ reports, setReports, loading }: RecentRe
             ]);
 
             const isNotCrop = diagnosis.disease?.toLowerCase().includes('not a crop');
+            const planEligible = isPlanEligible({
+                ...diagnosis,
+                status: 'Complete',
+                imageUrl: imageSrc,
+            });
             
             // Update report with new diagnosis
             await updateReport(user.uid, report.id, {
@@ -204,28 +212,36 @@ export default function RecentReports({ reports, setReports, loading }: RecentRe
                 affectedParts: diagnosis.affectedParts,
                 severity: diagnosis.severity,
                 description: diagnosis.description,
+                visualHighlights: diagnosis.visualHighlights,
+                visualHighlightsReviewed: true,
+                expertReviewRequired: diagnosis.expertReviewRequired,
+                plan: deleteField(),
+                protectionPlan: deleteField(),
                 status: isNotCrop ? 'Complete' : 'Processing'
-            });
+            } as any);
 
             let plan: any = null;
 
             if (!isNotCrop) {
-                // Generate treatment plan with timeout
-                plan = await Promise.race([
-                    generateLocalizedTreatmentPlan({
-                        disease: diagnosis.disease,
-                        crop: diagnosis.crop,
-                        language: profile?.language || 'english'
-                    }),
-                    timeoutPromise
-                ]);
+                // Use the plan already included in the diagnosis response
+                plan = diagnosis.plan || null;
 
                 // Complete the report
                 await updateReport(user.uid, report.id, {
-                    plan: plan as any,
+                    plan: planEligible && plan ? plan : deleteField(),
+                    protectionPlan: planEligible && diagnosis.protectionPlan ? diagnosis.protectionPlan : deleteField(),
                     status: 'Complete'
-                });
+                } as any);
             }
+
+            sendDiagnosisComplete(
+                user.uid,
+                report.id,
+                diagnosis.crop,
+                diagnosis.disease,
+                diagnosis.severity,
+                diagnosis.confidence
+            ).catch(console.warn);
 
             // Log the retry
             await createLog({
@@ -239,7 +255,13 @@ export default function RecentReports({ reports, setReports, loading }: RecentRe
             // Update local state
             setReports(prev => prev.map(r => 
                 r.id === report.id 
-                    ? { ...r, ...diagnosis, plan, status: 'Complete' as const }
+                    ? {
+                        ...r,
+                        ...diagnosis,
+                        plan: planEligible ? plan : null,
+                        protectionPlan: planEligible ? diagnosis.protectionPlan : undefined,
+                        status: 'Complete' as const,
+                    }
                     : r
             ));
 

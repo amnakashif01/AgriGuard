@@ -10,8 +10,8 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
-import { knowledgeBase } from "@/lib/knowledge-base";
 import { vectorSearch } from "@/lib/vector-search";
+import { mergeVisualHighlights } from '@/lib/report-utils';
 
 const InstantDiagnosisFromImageAndSymptomsInputSchema = z.object({
   photoDataUri: z
@@ -26,6 +26,11 @@ const InstantDiagnosisFromImageAndSymptomsInputSchema = z.object({
 export type InstantDiagnosisFromImageAndSymptomsInput = z.infer<
   typeof InstantDiagnosisFromImageAndSymptomsInputSchema
 >;
+
+// Internal schema extends external input with RAG knowledge context (used only by prompt template)
+const InternalPromptInputSchema = InstantDiagnosisFromImageAndSymptomsInputSchema.extend({
+    knowledgeContext: z.string().optional().describe('Knowledge base context from RAG vector search'),
+});
 
 const TreatmentStepSchema = z.object({
   stepNumber: z.number().describe('The step number in the treatment plan.'),
@@ -44,6 +49,33 @@ const TreatmentPlanSchema = z.object({
   preventionTips: z.array(z.string()).describe('A list of tips to prevent future occurrences of the disease.'),
 });
 
+const ProtectionPlanPhaseSchema = z.object({
+  week: z.number().describe('The week number (1 to 4).'),
+  title: z.string().describe('The focus or title for this week.'),
+  tasks: z.array(z.string()).describe('A list of tasks or preventive measures for the week.'),
+});
+
+const ProtectionPlanSchema = z.object({
+  duration: z.string().describe('The duration of the plan, should be "1 Month".'),
+  phases: z.array(ProtectionPlanPhaseSchema).describe('The weekly phases of the protection plan.'),
+  recommendations: z.array(z.string()).describe('General recommendations for protecting the crop.'),
+});
+
+const BoundingBoxSchema = z.array(z.number().int().min(0).max(1000)).length(4).describe('Bounding box coordinates [ymin, xmin, ymax, xmax] as integers from 0 to 1000');
+const VisualHighlightSchema = z.object({
+  boundingBox: BoundingBoxSchema,
+  reasoning: z.string().describe('A simple explanation of why this specific area is highlighted.'),
+});
+const VisualLocalizationInputSchema = z.object({
+  photoDataUri: InstantDiagnosisFromImageAndSymptomsInputSchema.shape.photoDataUri,
+  crop: z.string(),
+  disease: z.string(),
+  description: z.string(),
+});
+const VisualLocalizationOutputSchema = z.object({
+  visualHighlights: z.array(VisualHighlightSchema).max(40),
+});
+
 const InstantDiagnosisFromImageAndSymptomsOutputSchema = z.object({
   crop: z.string().describe('The type of crop identified in the image (e.g., Cotton, Wheat, Rice, Sugarcane, Maize, etc.). If crop cannot be identified, use "Unknown Crop".'),
   disease: z.string().describe('The name of the disease or pest affecting the crop. Use "Healthy" ONLY if the plant shows absolutely no symptoms. If symptoms are present but disease cannot be identified, use "Unknown Disease" or "Unidentified Issue".'),
@@ -54,11 +86,21 @@ const InstantDiagnosisFromImageAndSymptomsOutputSchema = z.object({
     .describe('The severity level of the disease or pest. Use "None" for healthy plants with no visible symptoms. Use Low/Medium/High only when disease is present.'),
   description: z.string().describe('A detailed description of the disease or pest and its symptoms. For healthy plants, describe why it is considered healthy. For unidentified diseases, describe the visible symptoms even if the specific disease cannot be named.'),
   plan: TreatmentPlanSchema.optional().describe('A detailed treatment plan. Only provide if a disease is identified.'),
+  protectionPlan: ProtectionPlanSchema.optional().describe('A detailed 1-month (4 weeks) step-by-step protection and recovery plan. Only provide if a disease is identified.'),
+  visualHighlights: z.array(VisualHighlightSchema).max(40).describe('Tightly bounded visual highlights for visible affected areas. Do not combine distant lesions or mark healthy areas.'),
+  expertReviewRequired: z.boolean().describe('True if the diagnosis has low confidence (< 70) or is a serious disease needing expert verification.'),
 });
 
 export type InstantDiagnosisFromImageAndSymptomsOutput = z.infer<
   typeof InstantDiagnosisFromImageAndSymptomsOutputSchema
 >;
+
+export async function localizeDiagnosisHighlights(
+  input: z.infer<typeof VisualLocalizationInputSchema>
+): Promise<InstantDiagnosisFromImageAndSymptomsOutput['visualHighlights']> {
+  const { output } = await visualLocalizationPrompt(input);
+  return output?.visualHighlights || [];
+}
 
 export async function instantDiagnosisFromImageAndSymptoms(
   input: InstantDiagnosisFromImageAndSymptomsInput
@@ -66,9 +108,10 @@ export async function instantDiagnosisFromImageAndSymptoms(
   return instantDiagnosisFromImageAndSymptomsFlow(input);
 }
 
+// Single prompt definition at module level — reused for every invocation (avoids re-compilation overhead)
 const prompt = ai.definePrompt({
   name: 'instantDiagnosisFromImageAndSymptomsPrompt',
-  input: {schema: InstantDiagnosisFromImageAndSymptomsInputSchema},
+  input: {schema: InternalPromptInputSchema},
   output: {schema: InstantDiagnosisFromImageAndSymptomsOutputSchema},
   prompt: `You are an expert plant pathologist specializing in Pakistani crops (cotton, wheat, rice, sugarcane, maize).
 Analyze the image and symptoms provided to diagnose any disease or pest affecting it.
@@ -78,18 +121,21 @@ Image: {{media url=photoDataUri}}
 Symptoms: {{{symptoms}}}
 
 Language instruction:
-Generate your ENTIRE final JSON output (specifically the description, disease, affectedParts, and the entire treatment plan) in the requested language: {{#if language}}{{{language}}}{{else}}english{{/if}}.
+Generate your ENTIRE final JSON output (specifically the description, disease, affectedParts, the entire treatment plan, and the protection plan) in the requested language: {{#if language}}{{{language}}}{{else}}english{{/if}}.
 Keep JSON keys in English.
 
+{{#if knowledgeContext}}
 Knowledge Base Context:
-{{knowledgeContext}}
+{{{knowledgeContext}}}
+{{/if}}
 
-Based on the image analysis and the knowledge base context above, identify:
+Based on the image analysis and any knowledge base context above, identify:
 1. Crop type (Cotton, Wheat, Rice, Sugarcane, Maize, or other common Pakistani crops). If unrecognizable, use "Unknown Crop".
 2. Disease/pest name:
    - Use "Healthy" ONLY if plant shows absolutely NO visible symptoms (no spots, no yellowing, no wilting, etc.)
-   - If symptoms ARE visible but disease cannot be identified: use "Unknown Disease" or "Unidentified Leaf Spotting" (describe what you see)
-   - If you can match to knowledge base: use the specific disease name
+  - Name a specific disease or pest when the visible evidence and crop context support it.
+  - Use "Unknown Disease" only when symptoms are visible but the available evidence is insufficient to identify a cause; describe the visible symptoms and set expertReviewRequired to true.
+  - Do not default to "Unknown Disease" merely because symptoms are present, and do not guess a specific disease when evidence is weak.
 3. Confidence score (0-100%) - consider both image analysis and symptom matching
 4. Affected parts - from the knowledge base context. Use empty array [] for truly healthy plants.
 5. Severity:
@@ -106,11 +152,32 @@ Based on the image analysis and the knowledge base context above, identify:
    - ONLY include if a disease or pest is identified. Do NOT include for "Healthy" or "Unknown Crop" / "Not a Crop".
    - Use locally available product names and brands for Pakistan.
    - Include cost estimates in Pakistani Rupees (PKR).
+8. Protection Plan (protectionPlan):
+   - You MUST provide a detailed 1-month (4 weeks) step-by-step protection and recovery plan if a disease is identified.
+   - Make it highly practical, step-by-step for a farmer to understand easily.
+
+9. visualHighlights: If disease is visible, provide one object for EACH clearly distinguishable lesion (up to 40 highlights). For dense overlapping lesions, mark separate small clusters rather than one broad area. Do not mark healthy areas or invent lesions. Each object MUST contain a \`boundingBox\` array of exactly 4 integers \`[ymin, xmin, ymax, xmax]\` (scaled 0 to 1000) and a short \`reasoning\` string. Set the box tightly around that specific diseased/red/brown area on the leaf or fruit.
+10. expertReviewRequired: Set to true if confidence is low (< 70) or it's a high-risk case.
 
 CRITICAL: If the image is CLEARLY NOT a plant or crop (e.g. a car, a person, a document), set Disease/pest name to "Not a Crop", Severity to "None", and skip diagnosis.
-CRITICAL: If you see yellowing, brown spots, wilting, or any abnormal appearance → DO NOT say "Healthy". Instead say "Unknown Disease" with appropriate severity.
+CRITICAL: If you see yellowing, brown spots, wilting, or another abnormality, do not call the plant Healthy. Identify the cause when evidence supports it; otherwise use Unknown Disease and request expert review.
+CRITICAL: The visualHighlights bounding boxes MUST use [ymin, xmin, ymax, xmax] coordinates scaled from 0 to 1000 relative to the full image. Return a tight box around each clearly visible affected area. Do not return an empty list when an affected area is visible, and never invent a lesion.
+CRITICAL: You MUST include the protectionPlan JSON object for any identified disease to give the farmer a 1-month treatment plan!
 
 Respond in JSON format.`, // prettier-ignore
+});
+
+const visualLocalizationPrompt = ai.definePrompt({
+  name: 'localizeDiagnosisHighlightsPrompt',
+  input: {schema: VisualLocalizationInputSchema},
+  output: {schema: VisualLocalizationOutputSchema},
+  prompt: `Inspect the crop image only for visible areas matching the reported condition.
+Crop: {{{crop}}}
+Reported condition: {{{disease}}}
+Visual description: {{{description}}}
+Image: {{media url=photoDataUri}}
+
+Scan the entire image systematically from top to bottom and left to right. Return a tight bounding box for EVERY clearly visible affected spot, including small brown or rotten lesions; do not stop after finding the first few. For dense areas, return one box per distinct spot or small, tightly bounded cluster, up to 40. Coordinates must be integers from 0 to 1000 in [ymin, xmin, ymax, xmax] order relative to the full image. Do not mark healthy areas or infer invisible damage. If no affected area is visibly identifiable, return an empty visualHighlights array. Keep each reasoning short.`,
 });
 
 const instantDiagnosisFromImageAndSymptomsFlow = ai.defineFlow(
@@ -120,8 +187,8 @@ const instantDiagnosisFromImageAndSymptomsFlow = ai.defineFlow(
     outputSchema: InstantDiagnosisFromImageAndSymptomsOutputSchema,
   },
   async input => {
-    // Retry/backoff helper for transient network errors
-    async function retry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 1000): Promise<T> {
+    // Retry helper with reduced backoff for live demo speed
+    async function retry<T>(fn: () => Promise<T>, attempts = 2, delayMs = 500): Promise<T> {
       let lastErr: any;
       for (let i = 0; i < attempts; i++) {
         try {
@@ -138,84 +205,53 @@ const instantDiagnosisFromImageAndSymptomsFlow = ai.defineFlow(
           if (code && !['UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT', 'ECONNRESET'].includes(code)) {
             throw err;
           }
-          // exponential backoff
-          const backoff = delayMs * Math.pow(2, i);
-          await new Promise(r => setTimeout(r, backoff));
+          // Exponential backoff with reduced base delay
+          await new Promise(r => setTimeout(r, delayMs * Math.pow(2, i)));
         }
       }
       throw lastErr;
     }
 
+    // Step 1: RAG enrichment from local knowledge base (fast, ~10ms)
+    let knowledgeContext = '';
     try {
-      // Step 1: Use RAG to find similar diseases based on symptoms
       const similarDiseases = await vectorSearch.searchSimilarDiseases(
         input.symptoms,
-        input.crop !== 'Unknown Crop' ? input.crop : undefined, // Use provided crop for better RAG
-        3, // top 3 similar diseases (reduced for speed)
-        0.25 // similarity threshold (lowered for faster matching)
+        input.crop !== 'Unknown Crop' ? input.crop : undefined,
+        3,  // top 3 similar diseases
+        0.25 // similarity threshold
       );
-
-      // Step 2: Prepare context from knowledge base
-      const knowledgeContext = similarDiseases.map(disease => 
+      knowledgeContext = similarDiseases.map(disease => 
         `Disease: ${disease.disease}\nCrop: ${disease.crop}\nSymptoms: ${disease.symptoms.join(', ')}\nSeverity: ${disease.severity}\nConfidence: ${disease.confidence}`
       ).join('\n\n');
-
-      // Step 3: Create enhanced prompt with knowledge context
-      const enhancedPrompt = ai.definePrompt({
-        name: 'ragEnhancedDiagnosisPrompt',
-        input: {schema: InstantDiagnosisFromImageAndSymptomsInputSchema},
-        output: {schema: InstantDiagnosisFromImageAndSymptomsOutputSchema},
-        prompt: `You are an expert plant pathologist specializing in Pakistani crops (cotton, wheat, rice, sugarcane, maize).
-Analyze the image and symptoms provided to diagnose any disease or pest affecting it.
-{{#if crop}}The user has identified the crop as: {{{crop}}}. Validate this based on the image, or use this context to guide your diagnosis.{{/if}}
-
-Image: {{media url=photoDataUri}}
-Symptoms: {{{symptoms}}}
-
-Language instruction:
-Generate your ENTIRE final JSON output (specifically the description, disease, affectedParts, and the entire treatment plan) in the requested language: {{#if language}}{{{language}}}{{else}}english{{/if}}.
-Keep JSON keys in English.
-
-Knowledge Base Context:
-${knowledgeContext}
-
-Based on the image analysis and the knowledge base context above, identify:
-1. Crop type (Cotton, Wheat, Rice, Sugarcane, Maize, or other common Pakistani crops). If unrecognizable, use "Unknown Crop".
-2. Disease/pest name:
-   - Use "Healthy" ONLY if plant shows absolutely NO visible symptoms (no spots, no yellowing, no wilting, etc.)
-   - If symptoms ARE visible but disease cannot be identified: use "Unknown Disease" or "Unidentified Leaf Spotting" (describe what you see)
-   - If you can match to knowledge base: use the specific disease name
-3. Confidence score (0-100%) - consider both image analysis and symptom matching
-4. Affected parts - from the knowledge base context. Use empty array [] for truly healthy plants.
-5. Severity:
-   - Use "None" ONLY for healthy plants with zero visible symptoms
-   - Use "Low" for minor symptoms
-   - Use "Medium" for moderate symptoms
-   - Use "High" for severe symptoms
-6. Description:
-   - For healthy: explain why it's considered healthy (green leaves, no spots, vigorous growth)
-   - For unknown disease: describe the visible symptoms in detail (yellowing, brown spots, size, location, etc.)
-   - For identified disease: use knowledge base information
-   - For non-plant images: politely state that the image does not appear to be a plant.
-7. Treatment Plan (plan):
-   - ONLY include if a disease or pest is identified. Do NOT include for "Healthy" or "Unknown Crop" / "Not a Crop".
-   - Use locally available product names and brands for Pakistan.
-   - Include cost estimates in Pakistani Rupees (PKR).
-
-CRITICAL: If the image is CLEARLY NOT a plant or crop (e.g. a car, a person, a document), set Disease/pest name to "Not a Crop", Severity to "None", and skip diagnosis.
-CRITICAL: If you see yellowing, brown spots, wilting, or any abnormal appearance → DO NOT say "Healthy". Instead say "Unknown Disease" with appropriate severity.
-
-Respond in JSON format.`,
-      });
-
-      const { output } = await retry(() => enhancedPrompt(input), 2, 1500);
-      return output!;
-    } catch (error) {
-      console.error('RAG-enhanced diagnosis error:', error);
-      
-      // Fallback to basic AI diagnosis if RAG fails
-      const { output } = await retry(() => prompt(input), 2, 1500);
-      return output!;
+    } catch (ragError) {
+      console.warn('RAG search failed, proceeding without knowledge context:', ragError);
     }
+
+    // Step 2: Single Gemini API call with optional RAG context (no duplicate prompt re-definition)
+    const { output } = await retry(
+      () => prompt({ ...input, knowledgeContext: knowledgeContext || undefined }),
+      2,
+      500
+    );
+    const diagnosis = output!;
+    const normalizedDisease = diagnosis.disease.toLocaleLowerCase();
+    const isHealthy = normalizedDisease.includes('healthy') || diagnosis.severity === 'None';
+    const isNotCrop = normalizedDisease.includes('not a crop') || normalizedDisease.includes('not a plant');
+
+    if (!isHealthy && !isNotCrop) {
+      try {
+        const localized = await localizeDiagnosisHighlights({
+          photoDataUri: input.photoDataUri,
+          crop: diagnosis.crop,
+          disease: diagnosis.disease,
+          description: diagnosis.description,
+        });
+        diagnosis.visualHighlights = mergeVisualHighlights(diagnosis.visualHighlights, localized);
+      } catch (localizationError) {
+        console.warn('Could not localize affected areas; returning diagnosis without markers:', localizationError);
+      }
+    }
+    return diagnosis;
   }
 );
